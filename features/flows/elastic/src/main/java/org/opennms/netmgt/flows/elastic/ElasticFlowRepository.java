@@ -29,19 +29,27 @@
 package org.opennms.netmgt.flows.elastic;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.Date;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
-import org.opennms.netmgt.flows.api.FlowSource;
-import org.opennms.netmgt.flows.api.NF5Packet;
-import org.opennms.plugins.elasticsearch.rest.BulkResultWrapper;
-import org.opennms.plugins.elasticsearch.rest.FailedItem;
 import org.opennms.netmgt.flows.api.FlowException;
 import org.opennms.netmgt.flows.api.FlowRepository;
+import org.opennms.netmgt.flows.api.FlowSource;
+import org.opennms.netmgt.flows.api.NF5Packet;
+import org.opennms.netmgt.flows.model.Application;
+import org.opennms.netmgt.flows.model.ConversationKey;
+import org.opennms.netmgt.flows.model.Directional;
+import org.opennms.netmgt.flows.model.TrafficSummary;
+import org.opennms.plugins.elasticsearch.rest.BulkResultWrapper;
+import org.opennms.plugins.elasticsearch.rest.FailedItem;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -49,6 +57,11 @@ import com.codahale.metrics.Histogram;
 import com.codahale.metrics.Meter;
 import com.codahale.metrics.MetricRegistry;
 import com.codahale.metrics.Timer;
+import com.google.common.collect.HashBasedTable;
+import com.google.common.collect.Table;
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonArray;
 
 import io.searchbox.action.Action;
 import io.searchbox.client.JestClient;
@@ -58,8 +71,14 @@ import io.searchbox.core.Bulk;
 import io.searchbox.core.Index;
 import io.searchbox.core.Search;
 import io.searchbox.core.SearchResult;
+import io.searchbox.core.search.aggregation.DateHistogramAggregation;
+import io.searchbox.core.search.aggregation.MetricAggregation;
+import io.searchbox.core.search.aggregation.SumAggregation;
+import io.searchbox.core.search.aggregation.TermsAggregation;
 
 public class ElasticFlowRepository implements FlowRepository {
+
+    private static final Gson gson = new GsonBuilder().create();
 
     private static final Logger LOG = LoggerFactory.getLogger(ElasticFlowRepository.class);
 
@@ -116,7 +135,7 @@ public class ElasticFlowRepository implements FlowRepository {
         enrichAndPersistFlows(flowDocuments, source);
     }
 
-    private void enrichAndPersistFlows(List<FlowDocument> flowDocuments, FlowSource source) throws FlowException {
+    public void enrichAndPersistFlows(List<FlowDocument> flowDocuments, FlowSource source) throws FlowException {
         // Track the number of flows per call
         flowsPerLog.update(flowDocuments.size());
 
@@ -173,6 +192,276 @@ public class ElasticFlowRepository implements FlowRepository {
                 "  }\n" +
                 "}\n";
         return searchAsync(query).thenApply(SearchResult::getTotal);
+    }
+
+
+    private CompletableFuture<List<String>> getTopN(int N, long start, long end, String groupByTerm, String extraFilters) {
+        // Increase the multiplier for increased accuracy
+        // See https://www.elastic.co/guide/en/elasticsearch/reference/current/search-aggregations-bucket-terms-aggregation.html#_size
+        final int multiplier = 2;
+        final String query = "{\n" +
+                "  \"size\": 0,\n" +
+                "  \"query\": {\n" +
+                "    \"bool\": {\n" +
+                "      \"filter\": [\n" +
+                "        {\n" +
+                "          \"range\": {\n" +
+                "            \"@timestamp\": {\n" +
+                String.format("\"gte\": %d,\n", start) +
+                String.format("\"lte\": %d,\n", end) +
+                "              \"format\": \"epoch_millis\"\n" +
+                "            }\n" +
+                "          }\n" +
+                "        }\n" +
+                "      ]\n" +
+                "    }\n" +
+                "  },\n" +
+                "  \"aggs\": {\n" +
+                "    \"grouped_by\": {\n" +
+                "      \"terms\": {\n" +
+                String.format("\"field\": \"%s\",\n", groupByTerm) +
+                String.format("\"size\": %d,\n", N*multiplier) +
+                "        \"order\": {\n" +
+                "          \"total_bytes\": \"desc\"\n" +
+                "        }\n" +
+                "      },\n" +
+                "      \"aggs\": {\n" +
+                "        \"total_bytes\": {\n" +
+                "          \"sum\": {\n" +
+                "            \"field\": \"netflow.bytes\"\n" +
+                "          }\n" +
+                "        }\n" +
+                "      }\n" +
+                "    }\n" +
+                "  }\n" +
+                "}\n";
+        return searchAsync(query).thenApply(res -> res.getAggregations().getTermsAggregation("grouped_by").getBuckets().stream()
+                .map(TermsAggregation.Entry::getKey)
+                .limit(N)
+                .collect(Collectors.toList()));
+    }
+
+
+    private static String toJsonArray(List<String> topN) {
+        final JsonArray terms = new JsonArray();
+        for (String topNEl : topN) {
+            terms.add(topNEl);
+        }
+        return gson.toJson(terms);
+    }
+
+    private CompletableFuture<Table<Directional<String>, Long, Double>> getSeriesFromTopN(List<String> topN, long start, long end, long step, String groupByTerm, String extraFilters) {
+        final String query = "{\n" +
+                "  \"size\": 0,\n" +
+                "  \"query\": {\n" +
+                "    \"bool\": {\n" +
+                "      \"filter\": [\n" +
+                (extraFilters != null ? extraFilters : "") +
+                "    {\n" +
+                "       \"terms\" : { \n" +
+                String.format("                    \"%s\" : %s\n", groupByTerm, toJsonArray(topN)) +
+                "                }\n" +
+                "     }," +
+                "        {\n" +
+                "          \"range\": {\n" +
+                "            \"@timestamp\": {\n" +
+                String.format("              \"gte\": %d,\n", start) +
+                String.format("              \"lte\": %d,\n", end) +
+                "              \"format\": \"epoch_millis\"\n" +
+                "            }\n" +
+                "          }\n" +
+                "        }\n" +
+                "      ]\n" +
+                "    }\n" +
+                "  },\n" +
+                "  \"aggs\": {\n" +
+                "    \"grouped_by\": {\n" +
+                "      \"terms\": {\n" +
+                String.format("        \"field\": \"%s\"\n", groupByTerm) +
+                "      },\n" +
+                "      \"aggs\": {\n" +
+                "          \"bytes_over_time\": {\n" +
+                "             \"date_histogram\": {\n" +
+                "                  \"field\": \"@timestamp\",\n" +
+                String.format("                  \"interval\": \"%dms\"\n", step) +
+                "              },\n" +
+                "  \"aggs\": {\n" +
+                "    \"direction\": {\n" +
+                "      \"terms\": {\n" +
+                "        \"field\": \"netflow.initiator\",\n" +
+                "        \"size\": 2\n" +
+                "      },\n" +
+
+                "              \"aggs\": {\n" +
+                "                \"total_bytes\": {\n" +
+                "                \"sum\": {\n" +
+                "                  \"field\": \"netflow.bytes\"\n" +
+                "                }\n" +
+                "              }\n" +
+                "           }\n" +
+                "        }\n" +
+                "        }\n" +
+                "      }\n" +
+                "    }\n" +
+                "  }\n" +
+                "  }\n" +
+                "}\n";
+
+        return searchAsync(query).thenApply(res -> {
+            final Table<Directional<String>, Long, Double> results = HashBasedTable.create();
+            final MetricAggregation aggs = res.getAggregations();
+            final TermsAggregation groupedBy = aggs.getTermsAggregation("grouped_by");
+            for (TermsAggregation.Entry groupedByBucket : groupedBy.getBuckets()) {
+                final DateHistogramAggregation bytesAggs = groupedByBucket.getDateHistogramAggregation("bytes_over_time");
+                for (DateHistogramAggregation.DateHistogram dateHistogram : bytesAggs.getBuckets()) {
+                    final Long time = dateHistogram.getTime();
+                    final TermsAggregation directionAgg = dateHistogram.getTermsAggregation("direction");
+                    for (TermsAggregation.Entry directionBucket : directionAgg.getBuckets()) {
+                        final boolean isInitiator = Boolean.valueOf(directionBucket.getKeyAsString());
+                        final SumAggregation sumAgg = directionBucket.getSumAggregation("total_bytes");
+                        final Double sum = sumAgg.getSum();
+                        results.put(new Directional<>(groupedByBucket.getKey(), isInitiator), time, sum);
+                    }
+                }
+            }
+            return results;
+        });
+    }
+
+    private CompletableFuture<Table<Directional<String>, Long, Double>> getSeriesFromTopN(int N, long start, long end, long step,
+                                                                                          String groupByTerm, String extraFilters) {
+        return getTopN(N, start, end, groupByTerm, extraFilters)
+                .thenCompose((topN) -> getSeriesFromTopN(topN, start, end, step, groupByTerm, extraFilters));
+    }
+
+    private CompletableFuture<List<TrafficSummary<String>>> getTotalBytesFromTopN(List<String> topN, long start, long end, String groupByTerm, String extraFilters) {
+        final String query = "{\n" +
+                "  \"size\": 0,\n" +
+                "  \"query\": {\n" +
+                "    \"bool\": {\n" +
+                "      \"filter\": [\n" +
+                (extraFilters != null ? extraFilters : "") +
+                "    {\n" +
+                "       \"terms\" : { \n" +
+                String.format("                    \"%s\" : %s\n", groupByTerm, toJsonArray(topN)) +
+                "                }\n" +
+                "     }," +
+                "        {\n" +
+                "          \"range\": {\n" +
+                "            \"@timestamp\": {\n" +
+                String.format("              \"gte\": %d,\n", start) +
+                String.format("              \"lte\": %d,\n", end) +
+                "              \"format\": \"epoch_millis\"\n" +
+                "            }\n" +
+                "          }\n" +
+                "        }\n" +
+                "      ]\n" +
+                "    }\n" +
+                "  },\n" +
+                "  \"aggs\": {\n" +
+                "    \"grouped_by\": {\n" +
+                "      \"terms\": {\n" +
+                String.format("        \"field\": \"%s\"\n", groupByTerm) +
+                "      },\n" +
+                "  \"aggs\": {\n" +
+                "    \"direction\": {\n" +
+                "      \"terms\": {\n" +
+                "        \"field\": \"netflow.initiator\",\n" +
+                "        \"size\": 2\n" +
+                "      },\n" +
+
+                "              \"aggs\": {\n" +
+                "                \"total_bytes\": {\n" +
+                "                \"sum\": {\n" +
+                "                  \"field\": \"netflow.bytes\"\n" +
+                "                }\n" +
+                "              }\n" +
+                "           }\n" +
+                "        }\n" +
+                "        }\n" +
+                "      }\n" +
+                "  }\n" +
+                "  }\n" +
+                "}\n";
+
+        return searchAsync(query).thenApply(res -> {
+            final List<TrafficSummary<String>> topNRes = new ArrayList<>(topN.size());
+            final MetricAggregation aggs = res.getAggregations();
+            final TermsAggregation groupedBy = aggs.getTermsAggregation("grouped_by");
+            for (TermsAggregation.Entry bucket : groupedBy.getBuckets()) {
+                final TrafficSummary<String> trafficSummary = new TrafficSummary<>(bucket.getKey());
+                final TermsAggregation directionAgg = bucket.getTermsAggregation("direction");
+                for (TermsAggregation.Entry directionBucket : directionAgg.getBuckets()) {
+                    final boolean isInitiator = Boolean.valueOf(directionBucket.getKeyAsString());
+                    final SumAggregation sumAgg = directionBucket.getSumAggregation("total_bytes");
+                    final Double sum = sumAgg.getSum();
+                    if (!isInitiator) {
+                        trafficSummary.setBytesOut(sum.longValue());
+                    } else {
+                        trafficSummary.setBytesIn(sum.longValue());
+                    }
+                }
+                topNRes.add(trafficSummary);
+            }
+            // FIXME: Inefficient
+            topNRes.sort(Comparator.comparing(e -> topN.indexOf(e.getKey())));
+            return topNRes;
+        });
+    }
+
+    private CompletableFuture<List<TrafficSummary<String>>> getTotalBytesFromTopN(int N, long start, long end, String groupByTerm, String extraFilters) {
+        return getTopN(N, start, end, groupByTerm, extraFilters)
+                .thenCompose((topN) -> getTotalBytesFromTopN(topN, start, end, groupByTerm, extraFilters));
+    }
+
+    @Override
+    public CompletableFuture<List<TrafficSummary<Application>>> getTopNApplications(int N, long start, long end) {
+        return getTotalBytesFromTopN(N, start, end, "netflow.application", null).thenApply((res) -> res.stream()
+                .map(summary -> {
+                    final TrafficSummary<Application> out = new TrafficSummary<>(new Application(summary.getKey()));
+                    out.setBytesIn(summary.getBytesIn());
+                    out.setBytesOut(summary.getBytesOut());
+                    return out;
+                })
+                .collect(Collectors.toList()));
+    }
+
+    private static <T> Table<Directional<T>, Long, Double> mapTable(Table<Directional<String>, Long, Double> source, Function<String, T> fn) {
+        final Table<Directional<T>, Long, Double> target = HashBasedTable.create();
+        final Set<Long> columnKeys = source.columnKeySet();
+        for (Directional<String> sourceRowKey : source.rowKeySet()) {
+            final Directional<T> targetRowKey = new Directional<>(fn.apply(sourceRowKey.getValue()), sourceRowKey.isInitiator());
+            for (Long columnKey : columnKeys) {
+                Double value = source.get(sourceRowKey, columnKey);
+                if (value == null) {
+                    value = Double.NaN;
+                }
+                target.put(targetRowKey, columnKey, value);
+            }
+        }
+        return target;
+    }
+
+    @Override
+    public CompletableFuture<Table<Directional<Application>, Long, Double>> getTopNApplicationsSeries(int N, long start, long end, long step) {
+        return getSeriesFromTopN(N, start, end, step, "netflow.application", null).thenApply((res) -> mapTable(res, Application::new));
+    }
+
+    @Override
+    public CompletableFuture<List<TrafficSummary<ConversationKey>>> getTopNConversations(int N, long start, long end) {
+        return getTotalBytesFromTopN(N, start, end, "netflow.convo_key", null).thenApply((res) -> res.stream()
+                .map(summary -> {
+                    final TrafficSummary<ConversationKey> out = new TrafficSummary<>(ConversationKey.fromKeyword(summary.getKey()));
+                    out.setBytesIn(summary.getBytesIn());
+                    out.setBytesOut(summary.getBytesOut());
+                    return out;
+                })
+                .collect(Collectors.toList()));
+    }
+
+    @Override
+    public CompletableFuture<Table<Directional<ConversationKey>, Long, Double>> getTopNConversationsSeries(int N, long start, long end, long step) {
+        return getSeriesFromTopN(N, start, end, step, "netflow.convo_key", null).thenApply((res) -> mapTable(res, ConversationKey::fromKeyword));
     }
 
     private <T extends JestResult> T executeRequest(Action<T> clientRequest) throws FlowException {

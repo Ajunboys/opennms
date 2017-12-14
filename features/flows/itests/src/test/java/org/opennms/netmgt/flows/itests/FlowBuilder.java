@@ -1,7 +1,7 @@
 /*******************************************************************************
  * This file is part of OpenNMS(R).
  *
- * Copyright (C) 2017-2017 The OpenNMS Group, Inc.
+ * Copyright (C) 2017 The OpenNMS Group, Inc.
  * OpenNMS(R) is Copyright (C) 1999-2017 The OpenNMS Group, Inc.
  *
  * OpenNMS(R) is a registered trademark of The OpenNMS Group, Inc.
@@ -26,38 +26,32 @@
  *     http://www.opennms.com/
  *******************************************************************************/
 
-package org.opennms.netmgt.flows.rest;
+package org.opennms.netmgt.flows.itests;
 
-import javax.ws.rs.Consumes;
-import javax.ws.rs.GET;
-import javax.ws.rs.POST;
-import javax.ws.rs.Path;
-import javax.ws.rs.Produces;
-import javax.ws.rs.QueryParam;
-import javax.ws.rs.core.MediaType;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
 
-import org.opennms.web.rest.v1.model.FlowSeriesRequest;
-import org.opennms.web.rest.v1.model.FlowSeriesResponse;
-import org.opennms.web.rest.v1.model.FlowSummaryRequest;
-import org.opennms.web.rest.v1.model.FlowSummaryResponse;
+import org.opennms.netmgt.flows.elastic.FlowDocument;
 
-@Path("flows")
-public interface FlowRestService {
+public class FlowBuilder {
 
-    @GET
-    @Path("count")
-    Long getFlowCount(@QueryParam("start") long start, @QueryParam("end") long end) throws Exception;
+    private final List<FlowDocument> flows = new ArrayList<>();
 
-    @POST
-    @Path("/series")
-    @Consumes(MediaType.APPLICATION_JSON)
-    @Produces(MediaType.APPLICATION_JSON)
-    FlowSeriesResponse getTimeSeries(FlowSeriesRequest request);
+    public FlowBuilder withFlow(Date date, String sourceIp, int sourcePort, String destIp, int destPort, long numBytes) {
+        final FlowDocument flow = new FlowDocument();
+        flow.setTimestamp(date.getTime());
+        flow.setSrcAddr(sourceIp);
+        flow.setSrcPort(sourcePort);
+        flow.setDstAddr(destIp);
+        flow.setDstPort(destPort);
+        flow.setBytes(numBytes);
+        flow.setProtocol(6); // TCP
+        flows.add(flow);
+        return this;
+    }
 
-    @POST
-    @Path("/summary")
-    @Consumes(MediaType.APPLICATION_JSON)
-    @Produces(MediaType.APPLICATION_JSON)
-    FlowSummaryResponse getSummary(FlowSummaryRequest request);
-
+    public List<FlowDocument> build() {
+        return flows;
+    }
 }

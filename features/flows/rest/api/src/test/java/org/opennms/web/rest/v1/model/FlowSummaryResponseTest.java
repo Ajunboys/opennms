@@ -1,7 +1,7 @@
 /*******************************************************************************
  * This file is part of OpenNMS(R).
  *
- * Copyright (C) 2017-2017 The OpenNMS Group, Inc.
+ * Copyright (C) 2017 The OpenNMS Group, Inc.
  * OpenNMS(R) is Copyright (C) 1999-2017 The OpenNMS Group, Inc.
  *
  * OpenNMS(R) is a registered trademark of The OpenNMS Group, Inc.
@@ -26,38 +26,36 @@
  *     http://www.opennms.com/
  *******************************************************************************/
 
-package org.opennms.netmgt.flows.rest;
+package org.opennms.web.rest.v1.model;
 
-import javax.ws.rs.Consumes;
-import javax.ws.rs.GET;
-import javax.ws.rs.POST;
-import javax.ws.rs.Path;
-import javax.ws.rs.Produces;
-import javax.ws.rs.QueryParam;
-import javax.ws.rs.core.MediaType;
+import java.io.IOException;
+import java.util.Arrays;
+import java.util.List;
 
-import org.opennms.web.rest.v1.model.FlowSeriesRequest;
-import org.opennms.web.rest.v1.model.FlowSeriesResponse;
-import org.opennms.web.rest.v1.model.FlowSummaryRequest;
-import org.opennms.web.rest.v1.model.FlowSummaryResponse;
+import org.junit.Test;
+import org.opennms.core.test.xml.JsonTest;
 
-@Path("flows")
-public interface FlowRestService {
+import com.google.common.collect.Lists;
 
-    @GET
-    @Path("count")
-    Long getFlowCount(@QueryParam("start") long start, @QueryParam("end") long end) throws Exception;
+public class FlowSummaryResponseTest {
 
-    @POST
-    @Path("/series")
-    @Consumes(MediaType.APPLICATION_JSON)
-    @Produces(MediaType.APPLICATION_JSON)
-    FlowSeriesResponse getTimeSeries(FlowSeriesRequest request);
+    @Test
+    public void testMarshalJson() throws IOException {
+        FlowSummaryResponse response = new FlowSummaryResponse();
+        response.setStart(1);
+        response.setEnd(100);
+        response.setHeaders(Lists.newArrayList("Application", "Bytes In", "Bytes Out"));
+        response.setRows(Arrays.asList(
+                Lists.newArrayList("SSH", 500L, 501L),
+                Lists.newArrayList("RDP", 400L, 401L)
+        ));
 
-    @POST
-    @Path("/summary")
-    @Consumes(MediaType.APPLICATION_JSON)
-    @Produces(MediaType.APPLICATION_JSON)
-    FlowSummaryResponse getSummary(FlowSummaryRequest request);
-
+        String responseString = JsonTest.marshalToJson(response);
+        JsonTest.assertJsonEquals("{\n" +
+                "  \"start\" : 1,\n" +
+                "  \"end\" : 100,\n" +
+                "  \"headers\" : [ \"Application\", \"Bytes In\", \"Bytes Out\" ],\n" +
+                "  \"rows\" : [ [ \"SSH\", 500, 501 ], [ \"RDP\", 400, 401 ] ]\n" +
+                "}", responseString);
+    }
 }

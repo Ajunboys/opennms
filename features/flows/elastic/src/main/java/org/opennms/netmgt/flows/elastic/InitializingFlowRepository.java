@@ -29,6 +29,7 @@
 package org.opennms.netmgt.flows.elastic;
 
 import java.util.Collection;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 
@@ -37,6 +38,12 @@ import org.opennms.netmgt.flows.api.FlowRepository;
 import org.opennms.netmgt.flows.api.FlowSource;
 import org.opennms.netmgt.flows.api.NF5Packet;
 import org.opennms.netmgt.flows.elastic.template.IndexSettings;
+import org.opennms.netmgt.flows.model.Application;
+import org.opennms.netmgt.flows.model.ConversationKey;
+import org.opennms.netmgt.flows.model.Directional;
+import org.opennms.netmgt.flows.model.TrafficSummary;
+
+import com.google.common.collect.Table;
 
 import io.searchbox.client.JestClient;
 
@@ -70,9 +77,35 @@ public class InitializingFlowRepository implements FlowRepository {
         return delegate.getFlowCount(start, end);
     }
 
+    @Override
+    public CompletableFuture<List<TrafficSummary<Application>>> getTopNApplications(int N, long start, long end) {
+        return ensureInitializedAsync(delegate.getTopNApplications(N, start, end));
+    }
+
+    @Override
+    public CompletableFuture<Table<Directional<Application>, Long, Double>> getTopNApplicationsSeries(int N, long start, long end, long step) {
+        return ensureInitializedAsync(delegate.getTopNApplicationsSeries(N, start, end, step));
+    }
+
+    @Override
+    public CompletableFuture<List<TrafficSummary<ConversationKey>>> getTopNConversations(int N, long start, long end) {
+        return ensureInitializedAsync(delegate.getTopNConversations(N, start, end));
+    }
+
+    @Override
+    public CompletableFuture<Table<Directional<ConversationKey>, Long, Double>> getTopNConversationsSeries(int N, long start, long end, long step) {
+        return ensureInitializedAsync(delegate.getTopNConversationsSeries(N, start, end, step));
+    }
+
     private void ensureInitialized() {
         if (!initializer.isInitialized()) {
             initializer.initialize();
         }
+    }
+
+    private <U> CompletableFuture<U> ensureInitializedAsync(CompletableFuture<U> delegate) {
+        final CompletableFuture<U> future = new CompletableFuture<>();
+        // TODO: Actually make sure we're initialized in some async fashion
+        return CompletableFuture.completedFuture(null).thenCompose((ret) -> delegate);
     }
 }

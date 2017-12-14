@@ -1,7 +1,7 @@
 /*******************************************************************************
  * This file is part of OpenNMS(R).
  *
- * Copyright (C) 2017-2017 The OpenNMS Group, Inc.
+ * Copyright (C) 2017 The OpenNMS Group, Inc.
  * OpenNMS(R) is Copyright (C) 1999-2017 The OpenNMS Group, Inc.
  *
  * OpenNMS(R) is a registered trademark of The OpenNMS Group, Inc.
@@ -26,38 +26,29 @@
  *     http://www.opennms.com/
  *******************************************************************************/
 
-package org.opennms.netmgt.flows.rest;
+package org.opennms.netmgt.flows.elastic.ext;
 
-import javax.ws.rs.Consumes;
-import javax.ws.rs.GET;
-import javax.ws.rs.POST;
-import javax.ws.rs.Path;
-import javax.ws.rs.Produces;
-import javax.ws.rs.QueryParam;
-import javax.ws.rs.core.MediaType;
+import org.opennms.netmgt.flows.model.ConversationKey;
 
-import org.opennms.web.rest.v1.model.FlowSeriesRequest;
-import org.opennms.web.rest.v1.model.FlowSeriesResponse;
-import org.opennms.web.rest.v1.model.FlowSummaryRequest;
-import org.opennms.web.rest.v1.model.FlowSummaryResponse;
+public class ConversationClassificationImpl implements  ConversationClassification {
+    private boolean initiator;
+    private ConversationKey conversationKey;
 
-@Path("flows")
-public interface FlowRestService {
+    @Override
+    public boolean isInitiator() {
+        return initiator;
+    }
 
-    @GET
-    @Path("count")
-    Long getFlowCount(@QueryParam("start") long start, @QueryParam("end") long end) throws Exception;
+    public void setInitiator(boolean initiator) {
+        this.initiator = initiator;
+    }
 
-    @POST
-    @Path("/series")
-    @Consumes(MediaType.APPLICATION_JSON)
-    @Produces(MediaType.APPLICATION_JSON)
-    FlowSeriesResponse getTimeSeries(FlowSeriesRequest request);
+    @Override
+    public ConversationKey getConversationKey() {
+        return conversationKey;
+    }
 
-    @POST
-    @Path("/summary")
-    @Consumes(MediaType.APPLICATION_JSON)
-    @Produces(MediaType.APPLICATION_JSON)
-    FlowSummaryResponse getSummary(FlowSummaryRequest request);
-
+    public void setConversationKey(ConversationKey conversationKey) {
+        this.conversationKey = conversationKey;
+    }
 }

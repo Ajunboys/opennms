@@ -44,6 +44,9 @@ import org.opennms.netmgt.flows.api.FlowSource;
 import org.opennms.netmgt.flows.classification.ClassificationEngine;
 import org.opennms.netmgt.flows.classification.ClassificationRequest;
 import org.opennms.netmgt.flows.classification.persistence.Protocols;
+import org.opennms.netmgt.flows.elastic.ext.ConversationClassification;
+import org.opennms.netmgt.flows.elastic.ext.ConversationClassifier;
+import org.opennms.netmgt.flows.elastic.ext.ConversationClassifierImpl;
 import org.opennms.netmgt.model.OnmsCategory;
 import org.opennms.netmgt.model.OnmsNode;
 import org.slf4j.Logger;
@@ -64,6 +67,8 @@ public class DocumentEnricher {
     private final TransactionOperations transactionOperations;
 
     private final ClassificationEngine classificationEngine;
+
+    private final ConversationClassifier conversationClassifier = new ConversationClassifierImpl();
 
     // Caches NodeDocument data
     private final LoadingCache<NodeInfoKey, Optional<NodeDocument>> nodeInfoCache;
@@ -98,7 +103,6 @@ public class DocumentEnricher {
                 // Metadata from message
                 document.setHost(source.getSourceAddress());
                 document.setLocation(source.getLocation());
-                document.setInitiator(isInitiator(document));
 
                 // Node data
                 getNodeInfoFromCache(source.getLocation(), source.getSourceAddress()).ifPresent(document::setNodeExporter);
@@ -109,6 +113,11 @@ public class DocumentEnricher {
                 document.setSrcLocality(isPrivateAddress(document.getSrcAddr()) ? Locality.PRIVATE : Locality.PUBLIC);
                 document.setDstLocality(isPrivateAddress(document.getDstAddr()) ? Locality.PRIVATE : Locality.PUBLIC);
                 document.setFlowLocality(Locality.PUBLIC.equals(document.getDstLocality()) || Locality.PUBLIC.equals(document.getSrcLocality()) ? Locality.PUBLIC : Locality.PRIVATE);
+
+                // Conversation classification
+                final ConversationClassification convoClassification = conversationClassifier.classify(document);
+                document.setInitiator(convoClassification.isInitiator());
+                document.setConvoKey(convoClassification.getConversationKey().toKeyword());
 
                 // Apply Application mapping
                 document.setApplication(classificationEngine.classify(createClassificationRequest(document)));
@@ -182,19 +191,7 @@ public class DocumentEnricher {
         }
     }
 
-    // Determine if the provided flow is the initiator.
-    // Yes, this may not be 100% accurate, but is a very easy way of defining the direction of the flow in most cases.
-    protected static boolean isInitiator(FlowDocument document) {
-        if (document.getSrcPort()  > document.getDstPort()) {
-            return true;
-        } else if (document.getSrcPort() == document.getDstPort()) {
-            // Tie breaker
-            final BigInteger sourceAddressAsInt = InetAddressUtils.toInteger(InetAddressUtils.addr(document.getSrcAddr()));
-            final BigInteger destAddressAsInt = InetAddressUtils.toInteger(InetAddressUtils.addr(document.getDstAddr()));
-            return sourceAddressAsInt.compareTo(destAddressAsInt) > 0;
-        }
-        return false;
-    }
+
 
     protected static ClassificationRequest createClassificationRequest(FlowDocument document) {
         final ClassificationRequest request = new ClassificationRequest();

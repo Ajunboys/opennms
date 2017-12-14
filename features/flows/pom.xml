@@ -15,6 +15,7 @@
     <module>classification</module>
     <module>elastic</module>
     <module>feature</module>
+    <module>itests</module>
     <module>rest</module>
   </modules>
 </project>
